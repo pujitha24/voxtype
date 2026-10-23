@@ -14,6 +14,19 @@ use crate::error::OutputError;
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Whether the compositor named by `XDG_CURRENT_DESKTOP` lacks the
+/// `zwp_virtual_keyboard_manager_v1` protocol that wtype needs.
+///
+/// Neither KWin (KDE) nor Mutter (GNOME) implements it, so wtype can never
+/// type there. The variable is a colon-separated list (e.g. `ubuntu:GNOME`).
+/// An unset or unrecognized value returns false so other setups are unaffected.
+fn compositor_lacks_virtual_keyboard(current_desktop: Option<&str>) -> bool {
+    current_desktop.is_some_and(|d| {
+        d.split(':')
+            .any(|part| part.eq_ignore_ascii_case("KDE") || part.eq_ignore_ascii_case("GNOME"))
+    })
+}
+
 /// wtype-based text output
 pub struct WtypeOutput {
     /// Whether to send Enter key after output
@@ -193,6 +206,15 @@ impl TextOutput for WtypeOutput {
     }
 
     async fn is_available(&self) -> bool {
+        let current_desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+        if compositor_lacks_virtual_keyboard(current_desktop.as_deref()) {
+            tracing::debug!(
+                desktop = current_desktop.as_deref().unwrap_or_default(),
+                "Skipping wtype: compositor does not support the virtual keyboard protocol"
+            );
+            return false;
+        }
+
         // Just check if wtype exists in PATH
         // Don't check WAYLAND_DISPLAY - systemd services may not have it
         // wtype will fail naturally if Wayland isn't available
@@ -214,6 +236,18 @@ impl TextOutput for WtypeOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compositor_lacks_virtual_keyboard() {
+        assert!(compositor_lacks_virtual_keyboard(Some("KDE")));
+        assert!(compositor_lacks_virtual_keyboard(Some("GNOME")));
+        assert!(compositor_lacks_virtual_keyboard(Some("ubuntu:GNOME")));
+        assert!(compositor_lacks_virtual_keyboard(Some("gnome")));
+        assert!(!compositor_lacks_virtual_keyboard(Some("Hyprland")));
+        assert!(!compositor_lacks_virtual_keyboard(Some("sway")));
+        assert!(!compositor_lacks_virtual_keyboard(Some("")));
+        assert!(!compositor_lacks_virtual_keyboard(None));
+    }
 
     #[test]
     fn test_new() {
